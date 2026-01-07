@@ -1,0 +1,28 @@
+[project]
+name = "cli-runner-mcp"
+version = "0.1.0"
+description = "MCP server for managing interactive CLI binary processes"
+authors = [{name = "Anthropic", email = "support@anthropic.com"}]
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.1.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project.scripts]
+cli-runner-mcp = "cli_runner_mcp:main"
+
+[tool.setuptools]
+py-modules = ["cli_runner_mcp"]
