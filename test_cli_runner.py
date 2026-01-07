@@ -94,7 +94,7 @@ async def test_basic_workflow():
     result_json = json.loads(result)
     print(f"✓ Process running: {result_json.get('is_running')}")
     print(f"   PID: {result_json.get('pid')}")
-    print(f"   Buffered lines (stdout): {result_json.get('stdout_lines_buffered')}")
+    print(f"   Buffered lines: {result_json.get('output_lines_buffered')}")
 
     # Test 7: Stop the process
     print(f"\n7. Stopping process {process_id}...")

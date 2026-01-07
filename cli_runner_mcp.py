@@ -10,9 +10,9 @@ Don't confuse this with the stdin/stdout of the managed binary processes.
 """
 
 import asyncio
-import json
 import logging
 import os
+import pexpect
 import sys
 import uuid
 from collections import deque
@@ -45,22 +45,18 @@ class ProcessInfo:
     process_id: str
     command: str
     args: List[str]
-    process: asyncio.subprocess.Process
+    process: pexpect.spawn
     stdout_buffer: Deque[str] = field(
-        default_factory=lambda: deque(maxlen=DEFAULT_BUFFER_SIZE)
-    )
-    stderr_buffer: Deque[str] = field(
         default_factory=lambda: deque(maxlen=DEFAULT_BUFFER_SIZE)
     )
     log_file: Optional[Path] = None
     started_at: datetime = field(default_factory=datetime.now)
-    stdout_task: Optional[asyncio.Task] = None
-    stderr_task: Optional[asyncio.Task] = None
+    reader_task: Optional[asyncio.Task] = None
 
     @property
     def is_running(self) -> bool:
         """Check if process is still running"""
-        return self.process.returncode is None
+        return self.process.isalive()
 
 
 # Global process registry
@@ -108,80 +104,62 @@ def _log_to_file(log_file: Path, prefix: str, content: str):
         logger.error(f"Failed to write to log file {log_file}: {e}")
 
 
-async def _read_stream(
-    stream: asyncio.StreamReader, buffer: Deque[str], log_file: Path, prefix: str
+async def _read_pexpect_output(
+    process: pexpect.spawn, buffer: Deque[str], log_file: Path, prefix: str
 ):
-    """Background task to continuously read from a stream"""
-    try:
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
+    """Background task to continuously read from a pexpect process"""
+    loop = asyncio.get_event_loop()
 
-            decoded = line.decode("utf-8", errors="replace")
-            buffer.append(decoded)
-            _log_to_file(log_file, prefix, decoded)
+    def read_chunk():
+        """Helper to read data from pexpect process"""
+        try:
+            # Since we used encoding='utf-8', this returns a string
+            return process.read_nonblocking(size=4096, timeout=0.1)
+        except pexpect.TIMEOUT:
+            return None
+        except pexpect.EOF:
+            return ""  # Empty string signals EOF
+
+    try:
+        while process.isalive():
+            try:
+                # Read data from process
+                data = await loop.run_in_executor(None, read_chunk)
+
+                if data is None:
+                    # Timeout, no data available
+                    await asyncio.sleep(0.05)
+                    continue
+
+                if data == "":
+                    # EOF
+                    logger.info(f"Process {prefix} ended (EOF)")
+                    break
+
+                # Data is already a string due to encoding='utf-8'
+                # Split into lines for buffering
+                lines = data.split("\n")
+                for i, line in enumerate(lines):
+                    if i < len(lines) - 1:
+                        # Not the last item, add newline
+                        line_with_newline = line + "\n"
+                        buffer.append(line_with_newline)
+                        _log_to_file(log_file, prefix, line_with_newline)
+                    elif line:
+                        # Last item and not empty (partial line)
+                        buffer.append(line)
+                        _log_to_file(log_file, prefix, line)
+
+            except Exception as e:
+                logger.error(f"Error reading {prefix}: {e}")
+                await asyncio.sleep(0.1)
 
     except asyncio.CancelledError:
-        logger.info(f"Stream reader task cancelled for {prefix}")
+        logger.info(f"Reader task cancelled for {prefix}")
     except Exception as e:
-        logger.error(f"Error reading {prefix}: {e}")
+        logger.error(f"Error in reader {prefix}: {e}")
 
 
-def _format_process_info(proc_info: ProcessInfo, include_output: bool = False) -> Dict:
-    """Format process information as a dictionary"""
-    info = {
-        "process_id": proc_info.process_id,
-        "command": proc_info.command,
-        "args": proc_info.args,
-        "started_at": proc_info.started_at.isoformat(),
-        "is_running": proc_info.is_running,
-        "pid": proc_info.process.pid,
-        "return_code": proc_info.process.returncode,
-        "log_file": str(proc_info.log_file) if proc_info.log_file else None,
-        "stdout_lines_buffered": len(proc_info.stdout_buffer),
-        "stderr_lines_buffered": len(proc_info.stderr_buffer),
-    }
-
-    if include_output:
-        info["recent_stdout"] = list(proc_info.stdout_buffer)[-10:]  # Last 10 lines
-        info["recent_stderr"] = list(proc_info.stderr_buffer)[-10:]
-
-    return info
-
-
-def _handle_error(error: Exception, context: str) -> str:
-    """Format error message with actionable guidance as JSON"""
-    if isinstance(error, FileNotFoundError):
-        message = f"Binary not found. {context}"
-        suggestions = [
-            "Verify the binary path is correct",
-            "Check if the binary is in PATH",
-            "Try using absolute path",
-            "Ensure the binary is executable",
-        ]
-    elif isinstance(error, PermissionError):
-        message = f"Permission denied. {context}"
-        suggestions = [
-            "Check file permissions",
-            "Verify execute bit is set (chmod +x)",
-            "Check if user has necessary privileges",
-        ]
-    elif isinstance(error, ProcessLookupError):
-        message = f"Process not found. {context}"
-        suggestions = ["The process may have already terminated."]
-    else:
-        message = f"{type(error).__name__}: {str(error)}"
-        suggestions = [context]
-
-    error_response = {
-        "success": False,
-        "error": message,
-        "error_type": type(error).__name__,
-        "suggestions": suggestions,
-    }
-
-    return json.dumps(error_response, indent=2)
 
 
 # ============================================================================
@@ -298,16 +276,19 @@ async def cli_runner_start(params: StartProcessInput) -> str:
                 FileNotFoundError(), f"Working directory does not exist: {cwd}"
             )
 
-        # Start the process
+        # Start the process with pexpect (automatically uses PTY)
         full_command = [params.command] + params.args
-        _log_to_file(log_file, "COMMAND", " ".join(full_command))
+        command_str = " ".join(full_command)
+        _log_to_file(log_file, "COMMAND", command_str)
 
-        process = await asyncio.create_subprocess_exec(
-            *full_command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
+        # Use pexpect.spawn to start the process with PTY support
+        process = pexpect.spawn(
+            params.command,
+            args=params.args,
+            cwd=str(cwd) if cwd else None,
+            encoding='utf-8',
+            codec_errors='replace',
+            timeout=None,  # Don't timeout on reads
         )
 
         # Create process info
@@ -319,12 +300,9 @@ async def cli_runner_start(params: StartProcessInput) -> str:
             log_file=log_file,
         )
 
-        # Start background tasks to read stdout/stderr
-        proc_info.stdout_task = asyncio.create_task(
-            _read_stream(process.stdout, proc_info.stdout_buffer, log_file, "STDOUT")
-        )
-        proc_info.stderr_task = asyncio.create_task(
-            _read_stream(process.stderr, proc_info.stderr_buffer, log_file, "STDERR")
+        # Start background task to read output
+        proc_info.reader_task = asyncio.create_task(
+            _read_pexpect_output(process, proc_info.stdout_buffer, log_file, "OUTPUT")
         )
 
         # Register process
@@ -334,24 +312,12 @@ async def cli_runner_start(params: StartProcessInput) -> str:
             f"Started process {process_id}: {params.command} (PID: {process.pid})"
         )
 
-        result = {
-            "success": True,
-            "process_id": process_id,
-            "command": params.command,
-            "args": params.args,
-            "pid": process.pid,
-            "log_file": str(log_file),
-            "message": f"Process started successfully. Use process_id '{process_id}' for subsequent operations.",
-        }
-
-        return json.dumps(result, indent=2)
+        return f"Started process {process_id} (PID: {process.pid})"
 
     except FileNotFoundError:
-        return _handle_error(
-            FileNotFoundError(), f"Command not found: {params.command}"
-        )
+        return f"Error: Command not found: {params.command}"
     except Exception as e:
-        return _handle_error(e, f"Failed to start process: {params.command}")
+        return f"Error: Failed to start process: {str(e)}"
 
 
 @mcp.tool(
@@ -374,57 +340,36 @@ async def cli_runner_send(params: SendInputInput) -> str:
         proc_info = _processes.get(params.process_id)
 
         if not proc_info:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
-                },
-                indent=2,
-            )
+            return f"Error: Process not found: {params.process_id}"
 
         if not proc_info.is_running:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process {params.process_id} has terminated",
-                    "return_code": proc_info.process.returncode,
-                    "suggestion": "Start a new process with cli_runner_start",
-                },
-                indent=2,
-            )
+            return f"Error: Process {params.process_id} has terminated"
 
         # Prepare text to send
         text_to_send = params.text
-        if params.add_newline and not text_to_send.endswith("\n"):
-            text_to_send += "\n"
 
-        # Write to stdin
-        proc_info.process.stdin.write(text_to_send.encode("utf-8"))
-        await proc_info.process.stdin.drain()
+        # Send to process (pexpect handles encoding)
+        loop = asyncio.get_event_loop()
+        if params.add_newline:
+            await loop.run_in_executor(None, proc_info.process.sendline, text_to_send)
+            text_logged = text_to_send + "\n"
+        else:
+            await loop.run_in_executor(None, proc_info.process.send, text_to_send)
+            text_logged = text_to_send
 
         # Log the input
-        _log_to_file(proc_info.log_file, "STDIN", text_to_send)
+        _log_to_file(proc_info.log_file, "STDIN", text_logged)
 
         logger.info(
             f"Sent input to process {params.process_id}: {repr(params.text[:50])}"
         )
 
-        result = {
-            "success": True,
-            "process_id": params.process_id,
-            "bytes_sent": len(text_to_send),
-            "message": "Input sent successfully",
-        }
-
-        return json.dumps(result, indent=2)
+        return "OK"
 
     except BrokenPipeError:
-        return _handle_error(
-            BrokenPipeError(), f"Process {params.process_id} stdin is closed"
-        )
+        return f"Error: Process {params.process_id} stdin is closed"
     except Exception as e:
-        return _handle_error(e, f"Failed to send input to process {params.process_id}")
+        return f"Error: Failed to send input: {str(e)}"
 
 
 @mcp.tool(
@@ -444,51 +389,25 @@ async def cli_runner_read_output(params: ReadOutputInput) -> str:
         proc_info = _processes.get(params.process_id)
 
         if not proc_info:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
-                },
-                indent=2,
-            )
+            return f"Error: Process not found: {params.process_id}"
 
-        # Collect output based on stream parameter
-        output_lines = []
+        # Collect output (pexpect combines stdout/stderr via PTY)
+        output_lines = list(proc_info.stdout_buffer)
+        if params.tail_lines:
+            output_lines = output_lines[-params.tail_lines :]
 
-        if params.stream in ["stdout", "both"]:
-            stdout_lines = list(proc_info.stdout_buffer)
-            if params.tail_lines:
-                stdout_lines = stdout_lines[-params.tail_lines :]
-            output_lines.extend([("stdout", line) for line in stdout_lines])
+        # Clear the buffer after reading so next read gets only new output
+        proc_info.stdout_buffer.clear()
 
-        if params.stream in ["stderr", "both"]:
-            stderr_lines = list(proc_info.stderr_buffer)
-            if params.tail_lines:
-                stderr_lines = stderr_lines[-params.tail_lines :]
-            output_lines.extend([("stderr", line) for line in stderr_lines])
+        # Return plain text with real newlines
+        if not output_lines:
+            return "(no output)"
 
-        result = {
-            "success": True,
-            "process_id": params.process_id,
-            "is_running": proc_info.is_running,
-            "return_code": proc_info.process.returncode,
-            "lines_returned": len(output_lines),
-            "output": (
-                output_lines
-                if params.stream == "both"
-                else [line for _, line in output_lines]
-            ),
-            "log_file": str(proc_info.log_file),
-            "message": f"Retrieved {len(output_lines)} lines from {params.stream}",
-        }
-
-        return json.dumps(result, indent=2)
+        # Join lines - they already have \r\n, so just concatenate
+        return "".join(output_lines)
 
     except Exception as e:
-        return _handle_error(
-            e, f"Failed to read output from process {params.process_id}"
-        )
+        return f"Error: Failed to read output: {str(e)}"
 
 
 @mcp.tool(
@@ -511,80 +430,66 @@ async def cli_runner_stop(params: StopProcessInput) -> str:
         proc_info = _processes.get(params.process_id)
 
         if not proc_info:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
-                },
-                indent=2,
-            )
+            return f"Error: Process not found: {params.process_id}"
 
         if not proc_info.is_running:
-            return json.dumps(
-                {
-                    "success": True,
-                    "process_id": params.process_id,
-                    "message": "Process already terminated",
-                    "return_code": proc_info.process.returncode,
-                },
-                indent=2,
-            )
+            return f"Process {params.process_id} already terminated"
 
         # Terminate the process
+        loop = asyncio.get_event_loop()
+
         if params.force:
-            proc_info.process.kill()
+            # Force kill
+            await loop.run_in_executor(None, proc_info.process.kill, 9)
             method = "SIGKILL (forced)"
         else:
-            proc_info.process.terminate()
+            # Graceful terminate
+            await loop.run_in_executor(None, proc_info.process.terminate)
             method = "SIGTERM (graceful)"
 
-        # Wait for process to finish
-        try:
-            await asyncio.wait_for(proc_info.process.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
-            proc_info.process.kill()
-            await proc_info.process.wait()
-            method += " -> SIGKILL (timeout)"
+            # Wait for process to finish with timeout
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, proc_info.process.wait),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                # Force kill if timeout
+                await loop.run_in_executor(None, proc_info.process.kill, 9)
+                await loop.run_in_executor(None, proc_info.process.wait)
+                method += " -> SIGKILL (timeout)"
 
-        # Cancel background tasks
-        if proc_info.stdout_task:
-            proc_info.stdout_task.cancel()
-        if proc_info.stderr_task:
-            proc_info.stderr_task.cancel()
+        # Cancel background reader task
+        if proc_info.reader_task:
+            proc_info.reader_task.cancel()
+            try:
+                await proc_info.reader_task
+            except asyncio.CancelledError:
+                pass
+
+        # Close the process
+        await loop.run_in_executor(None, proc_info.process.close)
 
         # Log termination
         _log_to_file(
             proc_info.log_file,
             "TERMINATED",
-            f"Method: {method}, Return code: {proc_info.process.returncode}",
+            f"Method: {method}, Exit status: {proc_info.process.exitstatus}",
         )
 
         logger.info(
             f"Stopped process {params.process_id} (PID: {proc_info.process.pid})"
         )
 
-        result = {
-            "success": True,
-            "process_id": params.process_id,
-            "pid": proc_info.process.pid,
-            "return_code": proc_info.process.returncode,
-            "termination_method": method,
-            "log_file": str(proc_info.log_file),
-            "message": f"Process terminated successfully using {method}",
-        }
-
         # Remove from registry
         del _processes[params.process_id]
 
-        return json.dumps(result, indent=2)
+        return f"Stopped process {params.process_id}"
 
     except ProcessLookupError:
-        return _handle_error(
-            ProcessLookupError(), f"Process {params.process_id} not found in system"
-        )
+        return f"Error: Process {params.process_id} not found in system"
     except Exception as e:
-        return _handle_error(e, f"Failed to stop process {params.process_id}")
+        return f"Error: Failed to stop process: {str(e)}"
 
 
 @mcp.tool(
@@ -601,31 +506,20 @@ async def cli_runner_list() -> str:
     """
     try:
         if not _processes:
-            return json.dumps(
-                {
-                    "success": True,
-                    "count": 0,
-                    "processes": [],
-                    "message": "No active processes",
-                },
-                indent=2,
-            )
+            return "(no active processes)"
 
-        processes_info = []
+        # Format as plain text, one process per line
+        lines = []
         for proc_info in _processes.values():
-            processes_info.append(_format_process_info(proc_info, include_output=False))
+            pid = proc_info.process.pid
+            cmd = proc_info.command
+            status = "running" if proc_info.is_running else "stopped"
+            lines.append(f"{proc_info.process_id}: {cmd} (PID: {pid}, {status})")
 
-        result = {
-            "success": True,
-            "count": len(processes_info),
-            "processes": processes_info,
-            "message": f"Found {len(processes_info)} active process(es)",
-        }
-
-        return json.dumps(result, indent=2)
+        return "\n".join(lines)
 
     except Exception as e:
-        return _handle_error(e, "Failed to list processes")
+        return f"Error: Failed to list processes: {str(e)}"
 
 
 @mcp.tool(
@@ -644,22 +538,30 @@ async def cli_runner_get_info(params: ProcessIdInput) -> str:
         proc_info = _processes.get(params.process_id)
 
         if not proc_info:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
-                },
-                indent=2,
-            )
+            return f"Error: Process not found: {params.process_id}"
 
-        info = _format_process_info(proc_info, include_output=True)
-        info["success"] = True
+        # Format as plain text info block
+        lines = [
+            f"Process ID: {proc_info.process_id}",
+            f"Command: {proc_info.command} {' '.join(proc_info.args)}",
+            f"PID: {proc_info.process.pid}",
+            f"Status: {'running' if proc_info.is_running else 'stopped'}",
+            f"Started: {proc_info.started_at.isoformat()}",
+            f"Buffered lines: {len(proc_info.stdout_buffer)}",
+            f"Log file: {proc_info.log_file}",
+        ]
 
-        return json.dumps(info, indent=2)
+        # Add recent output if available
+        if proc_info.stdout_buffer:
+            recent = list(proc_info.stdout_buffer)[-10:]
+            lines.append(f"Recent output (last {len(recent)} lines):")
+            for line in recent:
+                lines.append(f"  {line.rstrip()}")
+
+        return "\n".join(lines)
 
     except Exception as e:
-        return _handle_error(e, f"Failed to get info for process {params.process_id}")
+        return f"Error: Failed to get info: {str(e)}"
 
 
 # ============================================================================
