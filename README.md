@@ -1,4 +1,4 @@
-# CLI Runner MCP Server
+# Executor MCP Server
 
 An MCP (Model Context Protocol) server for managing interactive CLI binary processes. This server enables AI assistants to launch persistent binary processes, send stdin commands, and read stdout/stderr responses over time.
 
@@ -43,13 +43,13 @@ pip install .
 The server runs using stdio transport (default for MCP):
 
 ```bash
-cli-runner-mcp
+executor-mcp
 ```
 
 Or run directly:
 
 ```bash
-python cli_runner_mcp.py
+python executor_mcp.py
 ```
 
 ### Configuration
@@ -57,11 +57,11 @@ python cli_runner_mcp.py
 Configure via environment variable:
 
 ```bash
-export CLI_RUNNER_LOG_DIR="$HOME/.cli_runner/logs"
-cli-runner-mcp
+export EXECUTOR_LOG_DIR="$HOME/.executor-mcp/logs"
+executor-mcp
 ```
 
-Default log directory: `./cli_runner_logs/`
+Default log directory: `.executor-mcp/`
 
 ### Configuring with Claude Desktop
 
@@ -76,11 +76,11 @@ Add to your Claude Desktop configuration:
 ```json
 {
   "mcpServers": {
-    "cli-runner": {
+    "executor": {
       "command": "python",
-      "args": ["/absolute/path/to/cli_runner_mcp.py"],
+      "args": ["/absolute/path/to/executor_mcp.py"],
       "env": {
-        "CLI_RUNNER_LOG_DIR": "/path/to/logs"
+        "EXECUTOR_LOG_DIR": "/path/to/logs"
       }
     }
   }
@@ -92,8 +92,8 @@ Or if installed via pip:
 ```json
 {
   "mcpServers": {
-    "cli-runner": {
-      "command": "cli-runner-mcp"
+    "executor": {
+      "command": "executor-mcp"
     }
   }
 }
@@ -101,7 +101,7 @@ Or if installed via pip:
 
 ## Available Tools
 
-### 1. `cli_runner_start`
+### 1. `executor_start`
 
 Launch a new interactive binary process.
 
@@ -132,12 +132,12 @@ Launch a new interactive binary process.
 }
 ```
 
-### 2. `cli_runner_send`
+### 2. `executor_send`
 
 Send text to a process's stdin.
 
 **Parameters:**
-- `process_id` (string, required): Process ID from `cli_runner_start`
+- `process_id` (string, required): Process ID from `executor_start`
 - `text` (string, required): Text to send
 - `add_newline` (boolean, optional): Append newline (default: true)
 
@@ -160,7 +160,7 @@ Send text to a process's stdin.
 }
 ```
 
-### 3. `cli_runner_read_output`
+### 3. `executor_read_output`
 
 Read output from a process's stdout/stderr buffer.
 
@@ -192,7 +192,7 @@ Read output from a process's stdout/stderr buffer.
 }
 ```
 
-### 4. `cli_runner_stop`
+### 4. `executor_stop`
 
 Stop a running process.
 
@@ -221,7 +221,7 @@ Stop a running process.
 }
 ```
 
-### 5. `cli_runner_list`
+### 5. `executor_list`
 
 List all active processes.
 
@@ -250,7 +250,7 @@ List all active processes.
 }
 ```
 
-### 6. `cli_runner_get_info`
+### 6. `executor_get_info`
 
 Get detailed information about a specific process.
 
@@ -280,19 +280,19 @@ Get detailed information about a specific process.
 
 1. **Start a binary**:
    ```
-   Use cli_runner_start to launch your interactive CLI tool
+   Use executor_start to launch your interactive CLI tool
    → Returns a process_id
    ```
 
 2. **Send commands**:
    ```
-   Use cli_runner_send to write to stdin
+   Use executor_send to write to stdin
    → Process executes command
    ```
 
 3. **Read responses**:
    ```
-   Use cli_runner_read_output to retrieve stdout/stderr
+   Use executor_read_output to retrieve stdout/stderr
    → Get the command's output
    ```
 
@@ -300,7 +300,7 @@ Get detailed information about a specific process.
 
 5. **Stop when done**:
    ```
-   Use cli_runner_stop to terminate the process
+   Use executor_stop to terminate the process
    ```
 
 ## Example Use Cases
@@ -309,54 +309,54 @@ Get detailed information about a specific process.
 
 ```python
 # Start Python
-cli_runner_start(command="python3", args=["-i"])
+executor_start(command="python3", args=["-i"])
 # → process_id: "abc123"
 
 # Send Python code
-cli_runner_send(process_id="abc123", text="x = 42")
-cli_runner_send(process_id="abc123", text="print(x * 2)")
+executor_send(process_id="abc123", text="x = 42")
+executor_send(process_id="abc123", text="print(x * 2)")
 
 # Read output
-cli_runner_read_output(process_id="abc123", tail_lines=5)
+executor_read_output(process_id="abc123", tail_lines=5)
 # → [">>> x = 42\n", ">>> print(x * 2)\n", "84\n", ">>> "]
 
 # Stop Python
-cli_runner_stop(process_id="abc123")
+executor_stop(process_id="abc123")
 ```
 
 ### Database CLI Tool
 
 ```python
 # Start PostgreSQL CLI
-cli_runner_start(command="psql", args=["mydb"])
+executor_start(command="psql", args=["mydb"])
 # → process_id: "def456"
 
 # Execute queries
-cli_runner_send(process_id="def456", text="SELECT * FROM users LIMIT 5;")
-cli_runner_read_output(process_id="def456")
+executor_send(process_id="def456", text="SELECT * FROM users LIMIT 5;")
+executor_read_output(process_id="def456")
 
 # Continue querying
-cli_runner_send(process_id="def456", text="\\dt")  # List tables
-cli_runner_read_output(process_id="def456")
+executor_send(process_id="def456", text="\\dt")  # List tables
+executor_read_output(process_id="def456")
 
 # Exit
-cli_runner_stop(process_id="def456")
+executor_stop(process_id="def456")
 ```
 
 ### Node.js REPL
 
 ```python
 # Start Node.js
-cli_runner_start(command="node")
+executor_start(command="node")
 # → process_id: "ghi789"
 
 # Evaluate JavaScript
-cli_runner_send(process_id="ghi789", text="const fs = require('fs')")
-cli_runner_send(process_id="ghi789", text="fs.readdirSync('.')")
-cli_runner_read_output(process_id="ghi789")
+executor_send(process_id="ghi789", text="const fs = require('fs')")
+executor_send(process_id="ghi789", text="fs.readdirSync('.')")
+executor_read_output(process_id="ghi789")
 
 # Stop
-cli_runner_stop(process_id="ghi789")
+executor_stop(process_id="ghi789")
 ```
 
 ## Log Files
@@ -364,7 +364,7 @@ cli_runner_stop(process_id="ghi789")
 All process I/O is logged to timestamped files in the log directory:
 
 ```
-cli_runner_logs/
+.executor-mcp/
 ├── abc123_20260107_120000_python3.log
 ├── def456_20260107_120530_psql.log
 └── ghi789_20260107_121045_node.log
@@ -372,7 +372,7 @@ cli_runner_logs/
 
 **Log Format:**
 ```
-=== CLI Runner Process Log ===
+=== Executor MCP Process Log ===
 Process ID: abc123
 Command: python3
 Started: 2026-01-07T12:00:00.123456
@@ -381,10 +381,10 @@ Started: 2026-01-07T12:00:00.123456
 [2026-01-07 12:00:00.123] COMMAND: python3 -i
 [2026-01-07 12:00:00.456] STDOUT: Python 3.13.0 ...
 [2026-01-07 12:00:01.789] STDIN: x = 42
-[2026-01-07 12:00:01.890] STDOUT: >>> 
+[2026-01-07 12:00:01.890] STDOUT: >>>
 [2026-01-07 12:00:02.012] STDIN: print(x * 2)
 [2026-01-07 12:00:02.123] STDOUT: 84
-[2026-01-07 12:00:02.234] STDOUT: >>> 
+[2026-01-07 12:00:02.234] STDOUT: >>>
 [2026-01-07 12:00:05.567] TERMINATED: Method: SIGTERM (graceful), Return code: 0
 ```
 
@@ -421,16 +421,16 @@ Test the server manually:
 
 ```bash
 # Terminal 1: Start the server
-python cli_runner_mcp.py
+python executor_mcp.py
 
 # Terminal 2: Use MCP Inspector
-npx @modelcontextprotocol/inspector python cli_runner_mcp.py
+npx @modelcontextprotocol/inspector python executor_mcp.py
 ```
 
 ### Syntax Check
 
 ```bash
-python -m py_compile cli_runner_mcp.py
+python -m py_compile executor_mcp.py
 ```
 
 ### Packaging
@@ -443,8 +443,8 @@ python -m build
 ```
 
 This creates:
-- `dist/cli_runner_mcp-0.1.0.tar.gz`
-- `dist/cli_runner_mcp-0.1.0-py3-none-any.whl`
+- `dist/executor_mcp-0.1.0.tar.gz`
+- `dist/executor_mcp-0.1.0-py3-none-any.whl`
 
 ## License
 
@@ -455,7 +455,7 @@ Apache License 2.0 - See [LICENSE.txt](LICENSE.txt) for details.
 This MCP server follows the [MCP Best Practices](../reference/mcp_best_practices.md) and [Python Implementation Guide](../reference/python_mcp_server.md).
 
 Key design principles:
-- ✅ Clear, descriptive tool names with `cli_runner_` prefix
+- ✅ Clear, descriptive tool names with `executor_` prefix
 - ✅ Comprehensive error messages with actionable suggestions
 - ✅ Proper async/await for all I/O operations
 - ✅ Type-safe Pydantic models for input validation

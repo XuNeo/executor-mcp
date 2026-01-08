@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CLI Runner MCP Server
+Executor MCP Server
 
 An MCP server for managing interactive CLI binary processes.
 Enables AI to launch persistent binaries, send stdin commands, and read stdout responses.
@@ -28,14 +28,14 @@ from pydantic import BaseModel, Field, field_validator
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
-logger = logging.getLogger("cli_runner_mcp")
+logger = logging.getLogger("executor_mcp")
 
 # Initialize FastMCP server
-mcp = FastMCP("cli_runner_mcp")
+mcp = FastMCP("executor_mcp")
 
 # Global configuration
 DEFAULT_BUFFER_SIZE = 1000  # Lines to keep in memory
-LOG_DIR = Path(os.getenv("CLI_RUNNER_LOG_DIR", "./cli_runner_logs"))
+LOG_DIR = Path(os.getenv("EXECUTOR_LOG_DIR", ".executorlog"))
 
 
 @dataclass
@@ -87,7 +87,7 @@ def _create_log_file(process_id: str, command: str) -> Path:
 
     # Write header
     with open(log_file, "w") as f:
-        f.write(f"=== CLI Runner Process Log ===\n")
+        f.write(f"=== Executor MCP Process Log ===\n")
         f.write(f"Process ID: {process_id}\n")
         f.write(f"Command: {command}\n")
         f.write(f"Started: {datetime.now().isoformat()}\n")
@@ -215,7 +215,7 @@ class SendInputInput(BaseModel):
     """Input schema for sending input to a process"""
 
     process_id: str = Field(
-        ..., description="The process ID returned from cli_runner_start"
+        ..., description="The process ID returned from executor_start"
     )
     text: str = Field(..., description="Text to send to the process stdin")
     add_newline: bool = Field(
@@ -274,7 +274,7 @@ class ProcessIdInput(BaseModel):
         "idempotentHint": False,
     }
 )
-async def cli_runner_start(params: StartProcessInput) -> str:
+async def executor_start(params: StartProcessInput) -> str:
     """
     Start a new interactive binary process.
 
@@ -361,7 +361,7 @@ async def cli_runner_start(params: StartProcessInput) -> str:
         "idempotentHint": False,
     }
 )
-async def cli_runner_send(params: SendInputInput) -> str:
+async def executor_send(params: SendInputInput) -> str:
     """
     Send text to a process's stdin.
 
@@ -378,7 +378,7 @@ async def cli_runner_send(params: SendInputInput) -> str:
                 {
                     "success": False,
                     "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
+                    "suggestion": "Use executor_list to see active processes",
                 },
                 indent=2,
             )
@@ -389,7 +389,7 @@ async def cli_runner_send(params: SendInputInput) -> str:
                     "success": False,
                     "error": f"Process {params.process_id} has terminated",
                     "return_code": proc_info.process.returncode,
-                    "suggestion": "Start a new process with cli_runner_start",
+                    "suggestion": "Start a new process with executor_start",
                 },
                 indent=2,
             )
@@ -430,7 +430,7 @@ async def cli_runner_send(params: SendInputInput) -> str:
 @mcp.tool(
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
-async def cli_runner_read_output(params: ReadOutputInput) -> str:
+async def executor_read_output(params: ReadOutputInput) -> str:
     """
     Read output from a process's stdout/stderr buffer.
 
@@ -448,7 +448,7 @@ async def cli_runner_read_output(params: ReadOutputInput) -> str:
                 {
                     "success": False,
                     "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
+                    "suggestion": "Use executor_list to see active processes",
                 },
                 indent=2,
             )
@@ -498,7 +498,7 @@ async def cli_runner_read_output(params: ReadOutputInput) -> str:
         "idempotentHint": False,
     }
 )
-async def cli_runner_stop(params: StopProcessInput) -> str:
+async def executor_stop(params: StopProcessInput) -> str:
     """
     Stop a running process.
 
@@ -515,7 +515,7 @@ async def cli_runner_stop(params: StopProcessInput) -> str:
                 {
                     "success": False,
                     "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
+                    "suggestion": "Use executor_list to see active processes",
                 },
                 indent=2,
             )
@@ -590,7 +590,7 @@ async def cli_runner_stop(params: StopProcessInput) -> str:
 @mcp.tool(
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
-async def cli_runner_list() -> str:
+async def executor_list() -> str:
     """
     List all active processes.
 
@@ -631,7 +631,7 @@ async def cli_runner_list() -> str:
 @mcp.tool(
     annotations={"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True}
 )
-async def cli_runner_get_info(params: ProcessIdInput) -> str:
+async def executor_get_info(params: ProcessIdInput) -> str:
     """
     Get detailed information about a specific process.
 
@@ -648,7 +648,7 @@ async def cli_runner_get_info(params: ProcessIdInput) -> str:
                 {
                     "success": False,
                     "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use cli_runner_list to see active processes",
+                    "suggestion": "Use executor_list to see active processes",
                 },
                 indent=2,
             )

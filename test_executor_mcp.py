@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple test script for CLI Runner MCP Server.
+Simple test script for Executor MCP Server.
 Tests basic functionality without requiring full MCP inspector.
 """
 
@@ -9,16 +9,16 @@ import sys
 import json
 from pathlib import Path
 
-# Add parent directory to path to import cli_runner_mcp
+# Add parent directory to path to import executor_mcp
 sys.path.insert(0, str(Path(__file__).parent))
 
-from cli_runner_mcp import (
-    cli_runner_start,
-    cli_runner_send,
-    cli_runner_read_output,
-    cli_runner_list,
-    cli_runner_get_info,
-    cli_runner_stop,
+from executor_mcp import (
+    executor_start,
+    executor_send,
+    executor_read_output,
+    executor_list,
+    executor_get_info,
+    executor_stop,
     StartProcessInput,
     SendInputInput,
     ReadOutputInput,
@@ -38,7 +38,7 @@ async def test_basic_workflow():
     start_params = StartProcessInput(
         command="python3", args=["-i", "-u"]  # -u for unbuffered output
     )
-    result = await cli_runner_start(start_params)
+    result = await executor_start(start_params)
     result_json = json.loads(result)
     print(f"✓ Started: {result_json}")
 
@@ -54,7 +54,7 @@ async def test_basic_workflow():
     # Test 2: Read initial output
     print(f"\n2. Reading initial output from process {process_id}...")
     read_params = ReadOutputInput(process_id=process_id, stream="stdout")
-    result = await cli_runner_read_output(read_params)
+    result = await executor_read_output(read_params)
     result_json = json.loads(result)
     print(f"✓ Output: {result_json.get('lines_returned')} lines")
     if result_json.get("output"):
@@ -63,9 +63,9 @@ async def test_basic_workflow():
     # Test 3: Send a command
     print(f"\n3. Sending command to process {process_id}...")
     send_params = SendInputInput(
-        process_id=process_id, text="print('Hello from CLI Runner!')", add_newline=True
+        process_id=process_id, text="print('Hello from Executor MCP!')", add_newline=True
     )
-    result = await cli_runner_send(send_params)
+    result = await executor_send(send_params)
     result_json = json.loads(result)
     print(f"✓ Sent: {result_json}")
 
@@ -75,7 +75,7 @@ async def test_basic_workflow():
     # Test 4: Read the response
     print(f"\n4. Reading response...")
     read_params = ReadOutputInput(process_id=process_id, tail_lines=5, stream="stdout")
-    result = await cli_runner_read_output(read_params)
+    result = await executor_read_output(read_params)
     result_json = json.loads(result)
     print(f"✓ Response: {result_json.get('lines_returned')} lines")
     if result_json.get("output"):
@@ -83,14 +83,14 @@ async def test_basic_workflow():
 
     # Test 5: List processes
     print(f"\n5. Listing all processes...")
-    result = await cli_runner_list()
+    result = await executor_list()
     result_json = json.loads(result)
     print(f"✓ Found {result_json.get('count')} process(es)")
 
     # Test 6: Get detailed info
     print(f"\n6. Getting detailed info for process {process_id}...")
     info_params = ProcessIdInput(process_id=process_id)
-    result = await cli_runner_get_info(info_params)
+    result = await executor_get_info(info_params)
     result_json = json.loads(result)
     print(f"✓ Process running: {result_json.get('is_running')}")
     print(f"   PID: {result_json.get('pid')}")
@@ -99,7 +99,7 @@ async def test_basic_workflow():
     # Test 7: Stop the process
     print(f"\n7. Stopping process {process_id}...")
     stop_params = StopProcessInput(process_id=process_id, force=False)
-    result = await cli_runner_stop(stop_params)
+    result = await executor_stop(stop_params)
     result_json = json.loads(result)
     print(f"✓ Stopped: {result_json}")
 
@@ -118,7 +118,7 @@ async def test_echo_command():
     # Start cat (reads stdin and echoes to stdout)
     print("\n1. Starting cat command...")
     start_params = StartProcessInput(command="cat", args=[])
-    result = await cli_runner_start(start_params)
+    result = await executor_start(start_params)
     result_json = json.loads(result)
     print(f"✓ Started: {result_json}")
 
@@ -135,7 +135,7 @@ async def test_echo_command():
     send_params = SendInputInput(
         process_id=process_id, text="Hello, World!", add_newline=True
     )
-    result = await cli_runner_send(send_params)
+    result = await executor_send(send_params)
     print(f"✓ Sent: {json.loads(result)}")
 
     await asyncio.sleep(0.2)
@@ -143,14 +143,14 @@ async def test_echo_command():
     # Read output
     print(f"\n3. Reading echoed output...")
     read_params = ReadOutputInput(process_id=process_id, stream="stdout")
-    result = await cli_runner_read_output(read_params)
+    result = await executor_read_output(read_params)
     result_json = json.loads(result)
     print(f"✓ Output: {result_json.get('output')}")
 
     # Stop
     print(f"\n4. Stopping cat...")
     stop_params = StopProcessInput(process_id=process_id, force=True)
-    await cli_runner_stop(stop_params)
+    await executor_stop(stop_params)
     print(f"✓ Stopped")
 
     print("\n" + "=" * 60)
@@ -168,14 +168,14 @@ async def test_error_handling():
     # Test 1: Invalid command
     print("\n1. Testing invalid command...")
     start_params = StartProcessInput(command="/nonexistent/binary", args=[])
-    result = await cli_runner_start(start_params)
+    result = await executor_start(start_params)
     result_json = json.loads(result)
     print(f"✓ Error handled: Contains 'not found': {'not found' in result.lower()}")
 
     # Test 2: Invalid process ID
     print("\n2. Testing invalid process ID...")
     send_params = SendInputInput(process_id="invalid_id_123", text="test")
-    result = await cli_runner_send(send_params)
+    result = await executor_send(send_params)
     result_json = json.loads(result)
     print(f"✓ Error handled: {result_json.get('success') == False}")
     print(f"   Message: {result_json.get('error')}")
@@ -188,7 +188,7 @@ async def test_error_handling():
 
 async def main():
     """Run all tests"""
-    print("\n🧪 CLI Runner MCP Server - Test Suite\n")
+    print("\n🧪 Executor MCP Server - Test Suite\n")
 
     try:
         # Run tests

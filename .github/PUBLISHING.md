@@ -11,7 +11,7 @@ Trusted publishing uses OpenID Connect (OIDC) tokens for secure, passwordless au
 1. **Configure PyPI Trusted Publisher**:
    - Go to https://pypi.org/manage/account/publishing/
    - Add a new publisher with these settings:
-     - PyPI Project Name: `cli-runner-mcp`
+     - PyPI Project Name: `executor-mcp`
      - Owner: `<your-github-username-or-org>`
      - Repository name: `<your-repo-name>`
      - Workflow name: `publish.yml`
@@ -32,7 +32,7 @@ If you prefer using API tokens:
 
 1. **Generate PyPI API Token**:
    - Go to https://pypi.org/manage/account/token/
-   - Create a new API token with scope for `cli-runner-mcp` project
+   - Create a new API token with scope for `executor-mcp` project
 
 2. **Add Secret to GitHub**:
    - Go to repository → Settings → Secrets and variables → Actions

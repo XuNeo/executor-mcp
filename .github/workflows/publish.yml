@@ -41,7 +41,7 @@ jobs:
     
     environment:
       name: pypi
-      url: https://pypi.org/p/cli-runner-mcp
+      url: https://pypi.org/p/executor-mcp
     
     permissions:
       id-token: write  # IMPORTANT: mandatory for trusted publishing
@@ -63,7 +63,7 @@ jobs:
     
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/cli-runner-mcp
+      url: https://test.pypi.org/p/executor-mcp
     
     permissions:
       id-token: write  # IMPORTANT: mandatory for trusted publishing

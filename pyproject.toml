@@ -1,5 +1,5 @@
 [project]
-name = "cli-runner-mcp"
+name = "executor-mcp"
 version = "0.1.0"
 description = "MCP server for managing interactive CLI binary processes"
 authors = [{name = "Anthropic", email = "support@anthropic.com"}]
@@ -22,7 +22,7 @@ requires = ["setuptools>=68.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-cli-runner-mcp = "cli_runner_mcp:main"
+executor-mcp = "executor_mcp:main"
 
 [tool.setuptools]
-py-modules = ["cli_runner_mcp"]
+py-modules = ["executor_mcp"]

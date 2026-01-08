@@ -1,4 +1,4 @@
-# CLI Runner MCP - Quick Reference
+# Executor MCP - Quick Reference
 
 ## Installation
 
@@ -10,14 +10,14 @@ pip install -e .
 ## Running
 
 ```bash
-cli-runner-mcp
+executor-mcp
 # Or
-python cli_runner_mcp.py
+python executor_mcp.py
 ```
 
 ## Available Tools
 
-### 1. cli_runner_start
+### 1. executor_start
 Start a binary process
 ```json
 {
@@ -28,7 +28,7 @@ Start a binary process
 ```
 Returns: `process_id`
 
-### 2. cli_runner_send
+### 2. executor_send
 Send stdin to process
 ```json
 {
@@ -38,7 +38,7 @@ Send stdin to process
 }
 ```
 
-### 3. cli_runner_read_output
+### 3. executor_read_output
 Read stdout/stderr
 ```json
 {
@@ -48,7 +48,7 @@ Read stdout/stderr
 }
 ```
 
-### 4. cli_runner_stop
+### 4. executor_stop
 Stop process
 ```json
 {
@@ -57,10 +57,10 @@ Stop process
 }
 ```
 
-### 5. cli_runner_list
+### 5. executor_list
 List all processes (no params)
 
-### 6. cli_runner_get_info
+### 6. executor_get_info
 Get detailed process info
 ```json
 {
@@ -78,7 +78,7 @@ export CLI_RUNNER_LOG_DIR="$HOME/.cli_runner/logs"
 ## Testing
 
 ```bash
-python test_cli_runner.py
+python test_executor_mcp.py
 ```
 
 ## Key Features
@@ -110,7 +110,7 @@ stop(process_id="abc123")
 
 ## Log Files
 
-Location: `./cli_runner_logs/` (or `$CLI_RUNNER_LOG_DIR`)
+Location: `.executor-mcp/` (or `$EXECUTOR_LOG_DIR`)
 
 Format: `{process_id}_{timestamp}_{command}.log`
 
