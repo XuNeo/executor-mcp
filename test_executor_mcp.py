@@ -53,42 +53,49 @@ async def test_basic_workflow():
 
     # Test 2: Read initial output
     print(f"\n2. Reading initial output from process {process_id}...")
-    read_params = ReadOutputInput(process_id=process_id, stream="stdout")
+    read_params = ReadOutputInput(process_id=process_id)
     result = await executor_read_output(read_params)
     result_json = json.loads(result)
     print(f"✓ Output: {result_json.get('lines_returned')} lines")
     if result_json.get("output"):
         print(f"   First few lines: {result_json['output'][:3]}")
 
-    # Test 3: Send a command
-    print(f"\n3. Sending command to process {process_id}...")
+    # Test 3: Send a command with automatic output (new behavior)
+    print(f"\n3. Sending command to process {process_id} (with auto-wait)...")
     send_params = SendInputInput(
-        process_id=process_id, text="print('Hello from Executor MCP!')", add_newline=True
+        process_id=process_id, text="print('Hello from Executor MCP!')", add_newline=True, wait_time=0.3
     )
     result = await executor_send(send_params)
-    result_json = json.loads(result)
-    print(f"✓ Sent: {result_json}")
+    print(f"✓ Got output directly:")
+    print(f"   {result}")
 
-    # Wait for output
-    await asyncio.sleep(0.3)
+    # Test 4: Send without wait (backwards compatible)
+    print(f"\n4. Sending command without wait (wait_time=0)...")
+    send_params = SendInputInput(
+        process_id=process_id, text="x = 42", add_newline=True, wait_time=0
+    )
+    result = await executor_send(send_params)
+    print(f"✓ Result: {result}")
 
-    # Test 4: Read the response
-    print(f"\n4. Reading response...")
-    read_params = ReadOutputInput(process_id=process_id, tail_lines=5, stream="stdout")
+    await asyncio.sleep(0.2)
+
+    # Now read separately
+    print(f"\n5. Reading output separately...")
+    read_params = ReadOutputInput(process_id=process_id, tail_lines=5)
     result = await executor_read_output(read_params)
     result_json = json.loads(result)
     print(f"✓ Response: {result_json.get('lines_returned')} lines")
     if result_json.get("output"):
-        print(f"   Output: {result_json['output']}")
+        print(f"   Output: {result_json['output'][-3:]}")
 
-    # Test 5: List processes
-    print(f"\n5. Listing all processes...")
+    # Test 6: List processes
+    print(f"\n6. Listing all processes...")
     result = await executor_list()
     result_json = json.loads(result)
     print(f"✓ Found {result_json.get('count')} process(es)")
 
-    # Test 6: Get detailed info
-    print(f"\n6. Getting detailed info for process {process_id}...")
+    # Test 7: Get detailed info
+    print(f"\n7. Getting detailed info for process {process_id}...")
     info_params = ProcessIdInput(process_id=process_id)
     result = await executor_get_info(info_params)
     result_json = json.loads(result)
@@ -96,8 +103,8 @@ async def test_basic_workflow():
     print(f"   PID: {result_json.get('pid')}")
     print(f"   Buffered lines (stdout): {result_json.get('stdout_lines_buffered')}")
 
-    # Test 7: Stop the process
-    print(f"\n7. Stopping process {process_id}...")
+    # Test 8: Stop the process
+    print(f"\n8. Stopping process {process_id}...")
     stop_params = StopProcessInput(process_id=process_id, force=False)
     result = await executor_stop(stop_params)
     result_json = json.loads(result)
@@ -130,25 +137,16 @@ async def test_echo_command():
 
     await asyncio.sleep(0.2)
 
-    # Send some text
-    print(f"\n2. Sending text to cat...")
+    # Send some text with auto-wait
+    print(f"\n2. Sending text to cat (with auto-wait)...")
     send_params = SendInputInput(
-        process_id=process_id, text="Hello, World!", add_newline=True
+        process_id=process_id, text="Hello, World!", add_newline=True, wait_time=0.2
     )
     result = await executor_send(send_params)
-    print(f"✓ Sent: {json.loads(result)}")
-
-    await asyncio.sleep(0.2)
-
-    # Read output
-    print(f"\n3. Reading echoed output...")
-    read_params = ReadOutputInput(process_id=process_id, stream="stdout")
-    result = await executor_read_output(read_params)
-    result_json = json.loads(result)
-    print(f"✓ Output: {result_json.get('output')}")
+    print(f"✓ Got echoed output: {result}")
 
     # Stop
-    print(f"\n4. Stopping cat...")
+    print(f"\n3. Stopping cat...")
     stop_params = StopProcessInput(process_id=process_id, force=True)
     await executor_stop(stop_params)
     print(f"✓ Stopped")
@@ -174,11 +172,10 @@ async def test_error_handling():
 
     # Test 2: Invalid process ID
     print("\n2. Testing invalid process ID...")
-    send_params = SendInputInput(process_id="invalid_id_123", text="test")
+    send_params = SendInputInput(process_id="invalid_id_123", text="test", wait_time=0)
     result = await executor_send(send_params)
-    result_json = json.loads(result)
-    print(f"✓ Error handled: {result_json.get('success') == False}")
-    print(f"   Message: {result_json.get('error')}")
+    print(f"✓ Error handled: {result.startswith('Error:')}")
+    print(f"   Message: {result}")
 
     print("\n" + "=" * 60)
     print("✓ Error handling tests passed!")

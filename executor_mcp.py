@@ -222,6 +222,18 @@ class SendInputInput(BaseModel):
         default=True,
         description="Whether to append a newline character (default: true)",
     )
+    wait_time: Optional[float] = Field(
+        default=0.1,
+        ge=0,
+        le=10.0,
+        description="Seconds to wait before reading output (0 = no wait, no output returned)",
+    )
+    tail_lines: Optional[int] = Field(
+        default=20,
+        ge=1,
+        le=1000,
+        description="Number of recent output lines to return when wait_time > 0",
+    )
 
 
 class ReadOutputInput(BaseModel):
@@ -234,17 +246,6 @@ class ReadOutputInput(BaseModel):
         le=10000,
         description="Number of recent lines to return (default: all buffered lines)",
     )
-    stream: str = Field(
-        default="stdout",
-        description="Which stream to read: 'stdout', 'stderr', or 'both'",
-    )
-
-    @field_validator("stream")
-    @classmethod
-    def validate_stream(cls, v: str) -> str:
-        if v not in ["stdout", "stderr", "both"]:
-            raise ValueError("stream must be 'stdout', 'stderr', or 'both'")
-        return v
 
 
 class StopProcessInput(BaseModel):
@@ -363,36 +364,21 @@ async def executor_start(params: StartProcessInput) -> str:
 )
 async def executor_send(params: SendInputInput) -> str:
     """
-    Send text to a process's stdin.
+    Send text to a process's stdin and optionally wait for output.
 
-    Writes the provided text to the process's standard input, optionally followed
-    by a newline. This is how you interact with the running binary.
+    By default, waits 0.1 seconds and returns recent output (last 20 lines).
+    Set wait_time=0 to send without waiting for response.
 
-    Returns: JSON with success status and confirmation message.
+    Returns: Plain text output if wait_time > 0, or "Success" if wait_time = 0.
     """
     try:
         proc_info = _processes.get(params.process_id)
 
         if not proc_info:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process not found: {params.process_id}",
-                    "suggestion": "Use executor_list to see active processes",
-                },
-                indent=2,
-            )
+            return f"Error: Process not found: {params.process_id}"
 
         if not proc_info.is_running:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": f"Process {params.process_id} has terminated",
-                    "return_code": proc_info.process.returncode,
-                    "suggestion": "Start a new process with executor_start",
-                },
-                indent=2,
-            )
+            return f"Error: Process {params.process_id} has terminated (return code: {proc_info.process.returncode})"
 
         # Prepare text to send
         text_to_send = params.text
@@ -410,21 +396,33 @@ async def executor_send(params: SendInputInput) -> str:
             f"Sent input to process {params.process_id}: {repr(params.text[:50])}"
         )
 
-        result = {
-            "success": True,
-            "process_id": params.process_id,
-            "bytes_sent": len(text_to_send),
-            "message": "Input sent successfully",
-        }
+        # If wait_time is 0, return immediately
+        if params.wait_time == 0:
+            return "Success"
 
-        return json.dumps(result, indent=2)
+        # Wait for output
+        await asyncio.sleep(params.wait_time)
+
+        # Read output from both stdout and stderr
+        output_lines = []
+
+        stdout_lines = list(proc_info.stdout_buffer)
+        if params.tail_lines:
+            stdout_lines = stdout_lines[-params.tail_lines :]
+        output_lines.extend(stdout_lines)
+
+        stderr_lines = list(proc_info.stderr_buffer)
+        if params.tail_lines:
+            stderr_lines = stderr_lines[-params.tail_lines :]
+        output_lines.extend(stderr_lines)
+
+        # Return plain text output
+        return "".join(output_lines)
 
     except BrokenPipeError:
-        return _handle_error(
-            BrokenPipeError(), f"Process {params.process_id} stdin is closed"
-        )
+        return f"Error: Process {params.process_id} stdin is closed"
     except Exception as e:
-        return _handle_error(e, f"Failed to send input to process {params.process_id}")
+        return f"Error: {type(e).__name__}: {str(e)}"
 
 
 @mcp.tool(
@@ -453,20 +451,18 @@ async def executor_read_output(params: ReadOutputInput) -> str:
                 indent=2,
             )
 
-        # Collect output based on stream parameter
+        # Collect all output (both stdout and stderr)
         output_lines = []
 
-        if params.stream in ["stdout", "both"]:
-            stdout_lines = list(proc_info.stdout_buffer)
-            if params.tail_lines:
-                stdout_lines = stdout_lines[-params.tail_lines :]
-            output_lines.extend([("stdout", line) for line in stdout_lines])
+        stdout_lines = list(proc_info.stdout_buffer)
+        if params.tail_lines:
+            stdout_lines = stdout_lines[-params.tail_lines :]
+        output_lines.extend(stdout_lines)
 
-        if params.stream in ["stderr", "both"]:
-            stderr_lines = list(proc_info.stderr_buffer)
-            if params.tail_lines:
-                stderr_lines = stderr_lines[-params.tail_lines :]
-            output_lines.extend([("stderr", line) for line in stderr_lines])
+        stderr_lines = list(proc_info.stderr_buffer)
+        if params.tail_lines:
+            stderr_lines = stderr_lines[-params.tail_lines :]
+        output_lines.extend(stderr_lines)
 
         result = {
             "success": True,
@@ -474,13 +470,9 @@ async def executor_read_output(params: ReadOutputInput) -> str:
             "is_running": proc_info.is_running,
             "return_code": proc_info.process.returncode,
             "lines_returned": len(output_lines),
-            "output": (
-                output_lines
-                if params.stream == "both"
-                else [line for _, line in output_lines]
-            ),
+            "output": output_lines,
             "log_file": str(proc_info.log_file),
-            "message": f"Retrieved {len(output_lines)} lines from {params.stream}",
+            "message": f"Retrieved {len(output_lines)} lines",
         }
 
         return json.dumps(result, indent=2)
