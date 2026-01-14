@@ -52,10 +52,14 @@ class ProcessInfo:
     stderr_buffer: Deque[str] = field(
         default_factory=lambda: deque(maxlen=DEFAULT_BUFFER_SIZE)
     )
+    merged_buffer: Deque[str] = field(
+        default_factory=lambda: deque(maxlen=DEFAULT_BUFFER_SIZE)
+    )
     log_file: Optional[Path] = None
     started_at: datetime = field(default_factory=datetime.now)
     stdout_task: Optional[asyncio.Task] = None
     stderr_task: Optional[asyncio.Task] = None
+    total_lines_seen: int = 0
 
     @property
     def is_running(self) -> bool:
@@ -109,7 +113,11 @@ def _log_to_file(log_file: Path, prefix: str, content: str):
 
 
 async def _read_stream(
-    stream: asyncio.StreamReader, buffer: Deque[str], log_file: Path, prefix: str
+    stream: asyncio.StreamReader,
+    buffer: Deque[str],
+    log_file: Path,
+    prefix: str,
+    merged_buffer: Optional[Deque[str]] = None,
 ):
     """Background task to continuously read from a stream"""
     try:
@@ -121,6 +129,9 @@ async def _read_stream(
             decoded = line.decode("utf-8", errors="replace")
             buffer.append(decoded)
             _log_to_file(log_file, prefix, decoded)
+
+            if merged_buffer is not None:
+                merged_buffer.append(decoded)
 
     except asyncio.CancelledError:
         logger.info(f"Stream reader task cancelled for {prefix}")
@@ -141,11 +152,13 @@ def _format_process_info(proc_info: ProcessInfo, include_output: bool = False) -
         "log_file": str(proc_info.log_file) if proc_info.log_file else None,
         "stdout_lines_buffered": len(proc_info.stdout_buffer),
         "stderr_lines_buffered": len(proc_info.stderr_buffer),
+        "merged_lines_buffered": len(proc_info.merged_buffer),
     }
 
     if include_output:
-        info["recent_stdout"] = list(proc_info.stdout_buffer)[-10:]  # Last 10 lines
+        info["recent_stdout"] = list(proc_info.stdout_buffer)[-10:]
         info["recent_stderr"] = list(proc_info.stderr_buffer)[-10:]
+        info["recent_output"] = list(proc_info.merged_buffer)[-10:]
 
     return info
 
@@ -217,6 +230,27 @@ class SendInputInput(BaseModel):
     process_id: str = Field(
         ..., description="The process ID returned from executor_start"
     )
+    text: str = Field(..., description="Text to send to process stdin")
+    add_newline: bool = Field(
+        default=True,
+        description="Whether to append a newline character (default: true)",
+    )
+    wait_time: Optional[float] = Field(
+        default=0.1,
+        ge=0,
+        le=10.0,
+        description="Seconds to wait before reading output (0 = no wait, no output returned)",
+    )
+    tail_lines: Optional[int] = Field(
+        default=20,
+        ge=1,
+        le=1000,
+        description="Number of recent output lines to return (only used with full_buffer=True)",
+    )
+    full_buffer: bool = Field(
+        default=False,
+        description="If True, return last tail_lines from full buffer. If False (default), return only new output generated after this send.",
+    )
     text: str = Field(..., description="Text to send to the process stdin")
     add_newline: bool = Field(
         default=True,
@@ -246,6 +280,18 @@ class ReadOutputInput(BaseModel):
         le=10000,
         description="Number of recent lines to return (default: all buffered lines)",
     )
+    stream: str = Field(
+        default="both",
+        description="Which stream to read from: 'stdout', 'stderr', or 'both' (default: 'both' merges stdout/stderr)",
+    )
+
+    @field_validator("stream")
+    @classmethod
+    def validate_stream(cls, v: str) -> str:
+        valid_streams = ["stdout", "stderr", "both"]
+        if v not in valid_streams:
+            raise ValueError(f"stream must be one of {valid_streams}")
+        return v
 
 
 class StopProcessInput(BaseModel):
@@ -322,10 +368,22 @@ async def executor_start(params: StartProcessInput) -> str:
 
         # Start background tasks to read stdout/stderr
         proc_info.stdout_task = asyncio.create_task(
-            _read_stream(process.stdout, proc_info.stdout_buffer, log_file, "STDOUT")
+            _read_stream(
+                process.stdout,
+                proc_info.stdout_buffer,
+                log_file,
+                "STDOUT",
+                proc_info.merged_buffer,
+            )
         )
         proc_info.stderr_task = asyncio.create_task(
-            _read_stream(process.stderr, proc_info.stderr_buffer, log_file, "STDERR")
+            _read_stream(
+                process.stderr,
+                proc_info.stderr_buffer,
+                log_file,
+                "STDERR",
+                proc_info.merged_buffer,
+            )
         )
 
         # Register process
@@ -366,10 +424,16 @@ async def executor_send(params: SendInputInput) -> str:
     """
     Send text to a process's stdin and optionally wait for output.
 
-    By default, waits 0.1 seconds and returns recent output (last 20 lines).
-    Set wait_time=0 to send without waiting for response.
+    By default (wait_time > 0), waits specified seconds and returns ONLY NEW output generated after this send.
+    For long-running commands, use wait_time=0 to send immediately, then call executor_read_output later.
 
-    Returns: Plain text output if wait_time > 0, or "Success" if wait_time = 0.
+    Parameters:
+    - wait_time > 0: Wait and return only new output (default: 0.1 seconds)
+    - wait_time = 0: Send immediately without waiting (use executor_read_output later)
+    - full_buffer = True: Return last tail_lines from full buffer (old behavior)
+    - full_buffer = False: Return only new output (default, recommended)
+
+    Returns: JSON with new output if wait_time > 0, or "Success" if wait_time = 0.
     """
     try:
         proc_info = _processes.get(params.process_id)
@@ -396,28 +460,35 @@ async def executor_send(params: SendInputInput) -> str:
             f"Sent input to process {params.process_id}: {repr(params.text[:50])}"
         )
 
-        # If wait_time is 0, return immediately
         if params.wait_time == 0:
             return "Success"
 
-        # Wait for output
+        lines_before = len(proc_info.merged_buffer)
+
         await asyncio.sleep(params.wait_time)
 
-        # Read output from both stdout and stderr
-        output_lines = []
+        lines_after = len(proc_info.merged_buffer)
+        new_lines_count = lines_after - lines_before
 
-        stdout_lines = list(proc_info.stdout_buffer)
-        if params.tail_lines:
-            stdout_lines = stdout_lines[-params.tail_lines :]
-        output_lines.extend(stdout_lines)
+        if params.full_buffer:
+            tail_to_return = params.tail_lines or 20
+            output_lines = list(proc_info.merged_buffer)[-tail_to_return:]
+        else:
+            output_lines = (
+                list(proc_info.merged_buffer)[-new_lines_count:]
+                if new_lines_count > 0
+                else []
+            )
 
-        stderr_lines = list(proc_info.stderr_buffer)
-        if params.tail_lines:
-            stderr_lines = stderr_lines[-params.tail_lines :]
-        output_lines.extend(stderr_lines)
+        result = {
+            "success": True,
+            "process_id": params.process_id,
+            "output": output_lines,
+            "lines_returned": len(output_lines),
+            "message": f"Retrieved {len(output_lines)} new lines",
+        }
 
-        # Return plain text output
-        return "".join(output_lines)
+        return json.dumps(result, indent=2)
 
     except BrokenPipeError:
         return f"Error: Process {params.process_id} stdin is closed"
@@ -451,18 +522,16 @@ async def executor_read_output(params: ReadOutputInput) -> str:
                 indent=2,
             )
 
-        # Collect all output (both stdout and stderr)
-        output_lines = []
+        if params.stream == "stdout":
+            source_buffer = proc_info.stdout_buffer
+        elif params.stream == "stderr":
+            source_buffer = proc_info.stderr_buffer
+        else:
+            source_buffer = proc_info.merged_buffer
 
-        stdout_lines = list(proc_info.stdout_buffer)
+        output_lines = list(source_buffer)
         if params.tail_lines:
-            stdout_lines = stdout_lines[-params.tail_lines :]
-        output_lines.extend(stdout_lines)
-
-        stderr_lines = list(proc_info.stderr_buffer)
-        if params.tail_lines:
-            stderr_lines = stderr_lines[-params.tail_lines :]
-        output_lines.extend(stderr_lines)
+            output_lines = output_lines[-params.tail_lines :]
 
         result = {
             "success": True,
@@ -472,7 +541,7 @@ async def executor_read_output(params: ReadOutputInput) -> str:
             "lines_returned": len(output_lines),
             "output": output_lines,
             "log_file": str(proc_info.log_file),
-            "message": f"Retrieved {len(output_lines)} lines",
+            "message": f"Retrieved {len(output_lines)} lines from {params.stream}",
         }
 
         return json.dumps(result, indent=2)
