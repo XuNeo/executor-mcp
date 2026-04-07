@@ -5,11 +5,10 @@ Tests basic functionality without requiring full MCP inspector.
 """
 
 import asyncio
+import re
 import sys
-import json
 from pathlib import Path
 
-# Add parent directory to path to import executor_mcp
 sys.path.insert(0, str(Path(__file__).parent))
 
 from executor_mcp import (
@@ -27,196 +26,132 @@ from executor_mcp import (
 )
 
 
+def parse_kv(text):
+    """Parse 'key: value' lines into dict"""
+    return dict(re.findall(r"^(\w+):\s*(.+)$", text, re.MULTILINE))
+
+
 async def test_basic_workflow():
-    """Test basic workflow: start -> send -> read -> stop"""
     print("=" * 60)
     print("Test 1: Basic Workflow with Python REPL")
     print("=" * 60)
 
-    # Test 1: Start Python
+    # Start Python
     print("\n1. Starting Python REPL...")
-    start_params = StartProcessInput(
-        command="python3", args=["-i", "-u"]  # -u for unbuffered output
-    )
-    result = await executor_start(start_params)
-    result_json = json.loads(result)
-    print(f"✓ Started: {result_json}")
+    result = await executor_start(StartProcessInput(command="python3", args=["-i", "-u"]))
+    print(f"✓ {result}")
+    kv = parse_kv(result)
+    assert "process_id" in kv, f"Missing process_id: {result}"
+    process_id = kv["process_id"]
 
-    if not result_json.get("success"):
-        print("✗ Failed to start process")
-        return False
-
-    process_id = result_json["process_id"]
-
-    # Wait a moment for Python to start
     await asyncio.sleep(0.5)
 
-    # Test 2: Read initial output
-    print(f"\n2. Reading initial output from process {process_id}...")
-    read_params = ReadOutputInput(process_id=process_id)
-    result = await executor_read_output(read_params)
-    result_json = json.loads(result)
-    print(f"✓ Output: {result_json.get('lines_returned')} lines")
-    if result_json.get("output"):
-        print(f"   First few lines: {result_json['output'][:3]}")
+    # Read initial output
+    print(f"\n2. Reading initial output...")
+    result = await executor_read_output(ReadOutputInput(process_id=process_id))
+    print(f"✓ Output: {repr(result[:80])}")
 
-    # Test 3: Send a command with automatic output (new behavior)
-    print(f"\n3. Sending command to process {process_id} (with auto-wait)...")
-    send_params = SendInputInput(
-        process_id=process_id, text="print('Hello from Executor MCP!')", add_newline=True, wait_time=0.3
-    )
-    result = await executor_send(send_params)
-    print(f"✓ Got output directly:")
-    print(f"   {result}")
+    # Send command with auto-wait
+    print(f"\n3. Sending print command...")
+    result = await executor_send(SendInputInput(
+        process_id=process_id, text="print('Hello from Executor MCP!')", wait_time=0.3
+    ))
+    print(f"✓ Output: {repr(result)}")
+    assert "Hello from Executor MCP!" in result
 
-    # Test 4: Send without wait (backwards compatible)
-    print(f"\n4. Sending command without wait (wait_time=0)...")
-    send_params = SendInputInput(
-        process_id=process_id, text="x = 42", add_newline=True, wait_time=0
-    )
-    result = await executor_send(send_params)
+    # Send without wait
+    print(f"\n4. Sending without wait...")
+    result = await executor_send(SendInputInput(
+        process_id=process_id, text="x = 42", wait_time=0
+    ))
     print(f"✓ Result: {result}")
+    assert result == "ok"
 
     await asyncio.sleep(0.2)
 
-    # Now read separately
-    print(f"\n5. Reading output separately...")
-    read_params = ReadOutputInput(process_id=process_id, tail_lines=5)
-    result = await executor_read_output(read_params)
-    result_json = json.loads(result)
-    print(f"✓ Response: {result_json.get('lines_returned')} lines")
-    if result_json.get("output"):
-        print(f"   Output: {result_json['output'][-3:]}")
+    # Read output
+    print(f"\n5. Reading output...")
+    result = await executor_read_output(ReadOutputInput(process_id=process_id, tail_lines=5))
+    print(f"✓ Output: {repr(result[:80])}")
 
-    # Test 6: List processes
-    print(f"\n6. Listing all processes...")
+    # List processes
+    print(f"\n6. Listing processes...")
     result = await executor_list()
-    result_json = json.loads(result)
-    print(f"✓ Found {result_json.get('count')} process(es)")
+    print(f"✓ {result}")
+    assert process_id in result
 
-    # Test 7: Get detailed info
-    print(f"\n7. Getting detailed info for process {process_id}...")
-    info_params = ProcessIdInput(process_id=process_id)
-    result = await executor_get_info(info_params)
-    result_json = json.loads(result)
-    print(f"✓ Process running: {result_json.get('is_running')}")
-    print(f"   PID: {result_json.get('pid')}")
-    print(f"   Buffered lines (stdout): {result_json.get('stdout_lines_buffered')}")
+    # Get info
+    print(f"\n7. Getting info...")
+    result = await executor_get_info(ProcessIdInput(process_id=process_id))
+    print(f"✓ {result[:120]}")
+    assert "running" in result
 
-    # Test 8: Stop the process
-    print(f"\n8. Stopping process {process_id}...")
-    stop_params = StopProcessInput(process_id=process_id, force=False)
-    result = await executor_stop(stop_params)
-    result_json = json.loads(result)
-    print(f"✓ Stopped: {result_json}")
+    # Stop
+    print(f"\n8. Stopping...")
+    result = await executor_stop(StopProcessInput(process_id=process_id))
+    print(f"✓ {result}")
+    assert "stopped" in result
 
-    print("\n" + "=" * 60)
-    print("✓ All tests passed!")
-    print("=" * 60)
+    print("\n✓ Basic workflow passed!")
     return True
 
 
 async def test_echo_command():
-    """Test with simple echo command"""
     print("\n" + "=" * 60)
-    print("Test 2: Simple Echo Command")
+    print("Test 2: Echo Command")
     print("=" * 60)
 
-    # Start cat (reads stdin and echoes to stdout)
-    print("\n1. Starting cat command...")
-    start_params = StartProcessInput(command="cat", args=[])
-    result = await executor_start(start_params)
-    result_json = json.loads(result)
-    print(f"✓ Started: {result_json}")
-
-    if not result_json.get("success"):
-        print("✗ Failed to start process")
-        return False
-
-    process_id = result_json["process_id"]
+    result = await executor_start(StartProcessInput(command="cat"))
+    kv = parse_kv(result)
+    process_id = kv["process_id"]
 
     await asyncio.sleep(0.2)
 
-    # Send some text with auto-wait
-    print(f"\n2. Sending text to cat (with auto-wait)...")
-    send_params = SendInputInput(
-        process_id=process_id, text="Hello, World!", add_newline=True, wait_time=0.2
-    )
-    result = await executor_send(send_params)
-    print(f"✓ Got echoed output: {result}")
+    result = await executor_send(SendInputInput(
+        process_id=process_id, text="Hello, World!", wait_time=0.2
+    ))
+    print(f"✓ Echoed: {repr(result)}")
+    assert "Hello, World!" in result
 
-    # Stop
-    print(f"\n3. Stopping cat...")
-    stop_params = StopProcessInput(process_id=process_id, force=True)
-    await executor_stop(stop_params)
-    print(f"✓ Stopped")
-
-    print("\n" + "=" * 60)
+    await executor_stop(StopProcessInput(process_id=process_id, force=True))
     print("✓ Echo test passed!")
-    print("=" * 60)
     return True
 
 
 async def test_error_handling():
-    """Test error handling"""
     print("\n" + "=" * 60)
     print("Test 3: Error Handling")
     print("=" * 60)
 
-    # Test 1: Invalid command
-    print("\n1. Testing invalid command...")
-    start_params = StartProcessInput(command="/nonexistent/binary", args=[])
-    result = await executor_start(start_params)
-    result_json = json.loads(result)
-    print(f"✓ Error handled: Contains 'not found': {'not found' in result.lower()}")
+    result = await executor_start(StartProcessInput(command="/nonexistent/binary"))
+    print(f"✓ Invalid cmd: {result}")
+    assert "error:" in result
 
-    # Test 2: Invalid process ID
-    print("\n2. Testing invalid process ID...")
-    send_params = SendInputInput(process_id="invalid_id_123", text="test", wait_time=0)
-    result = await executor_send(send_params)
-    print(f"✓ Error handled: {result.startswith('Error:')}")
-    print(f"   Message: {result}")
+    result = await executor_send(SendInputInput(process_id="invalid_id", text="test", wait_time=0))
+    print(f"✓ Invalid pid: {result}")
+    assert "error:" in result or "not found" in result
 
-    print("\n" + "=" * 60)
-    print("✓ Error handling tests passed!")
-    print("=" * 60)
+    print("✓ Error handling passed!")
     return True
 
 
 async def main():
-    """Run all tests"""
     print("\n🧪 Executor MCP Server - Test Suite\n")
-
     try:
-        # Run tests
-        test1 = await test_basic_workflow()
-        test2 = await test_echo_command()
-        test3 = await test_error_handling()
+        t1 = await test_basic_workflow()
+        t2 = await test_echo_command()
+        t3 = await test_error_handling()
 
-        # Summary
         print("\n" + "=" * 60)
-        print("TEST SUMMARY")
+        print(f"Basic: {'PASS' if t1 else 'FAIL'} | Echo: {'PASS' if t2 else 'FAIL'} | Errors: {'PASS' if t3 else 'FAIL'}")
         print("=" * 60)
-        print(f"Basic Workflow: {'✓ PASS' if test1 else '✗ FAIL'}")
-        print(f"Echo Command: {'✓ PASS' if test2 else '✗ FAIL'}")
-        print(f"Error Handling: {'✓ PASS' if test3 else '✗ FAIL'}")
-        print("=" * 60)
-
-        if all([test1, test2, test3]):
-            print("\n🎉 All tests passed!\n")
-            return 0
-        else:
-            print("\n❌ Some tests failed\n")
-            return 1
+        return 0 if all([t1, t2, t3]) else 1
 
     except Exception as e:
-        print(f"\n❌ Test suite failed with error: {e}")
-        import traceback
-
-        traceback.print_exc()
+        print(f"\n❌ Failed: {e}")
+        import traceback; traceback.print_exc()
         return 1
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    sys.exit(asyncio.run(main()))
