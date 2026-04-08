@@ -277,6 +277,7 @@ async def executor_start(params: StartProcessInput) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            start_new_session=True,
         )
 
         # Create process info
@@ -466,6 +467,13 @@ async def executor_stop(params: StopProcessInput) -> str:
             del _processes[params.process_id]
             return f"already terminated, exit_code: {proc_info.process.returncode}"
 
+        # Cancel background reader tasks FIRST to avoid asyncio deadlock
+        # (readers holding pipe transports can block process.wait())
+        if proc_info.stdout_task:
+            proc_info.stdout_task.cancel()
+        if proc_info.stderr_task:
+            proc_info.stderr_task.cancel()
+
         # Terminate the process
         if params.force:
             proc_info.process.kill()
@@ -474,19 +482,17 @@ async def executor_stop(params: StopProcessInput) -> str:
             proc_info.process.terminate()
             method = "SIGTERM"
 
-        # Wait for process to finish
+        # Wait for process to finish (always with timeout)
         try:
             await asyncio.wait_for(proc_info.process.wait(), timeout=5.0)
         except asyncio.TimeoutError:
             proc_info.process.kill()
-            await proc_info.process.wait()
-            method += "->SIGKILL(timeout)"
-
-        # Cancel background tasks
-        if proc_info.stdout_task:
-            proc_info.stdout_task.cancel()
-        if proc_info.stderr_task:
-            proc_info.stderr_task.cancel()
+            try:
+                await asyncio.wait_for(proc_info.process.wait(), timeout=3.0)
+            except asyncio.TimeoutError:
+                method += "->SIGKILL(timeout, abandoned)"
+            else:
+                method += "->SIGKILL(timeout)"
 
         # Log termination
         _log_to_file(
@@ -499,12 +505,13 @@ async def executor_stop(params: StopProcessInput) -> str:
             f"Stopped process {params.process_id} (PID: {proc_info.process.pid})"
         )
 
-        exit_code = proc_info.process.returncode
+        rc = proc_info.process.returncode
+        exit_str = str(rc) if rc is not None else "unknown (abandoned)"
 
         # Remove from registry
         del _processes[params.process_id]
 
-        return f"stopped ({method}), exit_code: {exit_code}"
+        return f"stopped ({method}), exit_code: {exit_str}"
 
     except ProcessLookupError:
         return f"error: process {params.process_id} not found in system"
