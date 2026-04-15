@@ -99,13 +99,19 @@ def _create_log_file(process_id: str, command: str) -> Path:
 
 
 def _log_to_file(log_file: Path, prefix: str, content: str):
-    """Append content to log file with timestamp and prefix"""
+    """Append content to log file with timestamp and prefix.
+
+    Uses '>' suffix on prefix for partial content (no trailing newline),
+    ':' for complete lines. This lets external tools (executor-attach)
+    distinguish prompts from full output lines.
+    """
     try:
         with open(log_file, "a") as f:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-            f.write(f"[{timestamp}] {prefix}: {content}")
-            if not content.endswith("\n"):
-                f.write("\n")
+            if content.endswith("\n"):
+                f.write(f"[{timestamp}] {prefix}: {content}")
+            else:
+                f.write(f"[{timestamp}] {prefix}> {content}\n")
     except Exception as e:
         logger.error(f"Failed to write to log file {log_file}: {e}")
 
@@ -117,19 +123,36 @@ async def _read_stream(
     prefix: str,
     merged_buffer: Optional[Deque[str]] = None,
 ):
-    """Background task to continuously read from a stream"""
+    """Background task to continuously read from a stream.
+
+    Uses read() instead of readline() to capture partial output (prompts)
+    that don't end with newline. Each chunk is split into lines for the
+    buffer, with partial trailing content preserved as-is.
+    """
     try:
         while True:
-            line = await stream.readline()
-            if not line:
+            chunk = await stream.read(4096)
+            if not chunk:
                 break
 
-            decoded = line.decode("utf-8", errors="replace")
-            buffer.append(decoded)
-            _log_to_file(log_file, prefix, decoded)
+            decoded = chunk.decode("utf-8", errors="replace")
 
-            if merged_buffer is not None:
-                merged_buffer.append(decoded)
+            # Split into lines, preserving partial trailing content
+            parts = decoded.split("\n")
+            for i, part in enumerate(parts):
+                if i < len(parts) - 1:
+                    # Complete line (had \n after it)
+                    line = part + "\n"
+                    buffer.append(line)
+                    _log_to_file(log_file, prefix, line)
+                    if merged_buffer is not None:
+                        merged_buffer.append(line)
+                elif part:
+                    # Trailing partial content (no \n) — e.g., a prompt
+                    buffer.append(part)
+                    _log_to_file(log_file, prefix, part)
+                    if merged_buffer is not None:
+                        merged_buffer.append(part)
 
     except asyncio.CancelledError:
         logger.info(f"Stream reader task cancelled for {prefix}")
