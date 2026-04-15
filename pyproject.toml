@@ -1,6 +1,6 @@
 [project]
 name = "executor-mcp"
-version = "0.1.2"
+version = "0.1.3"
 description = "MCP server for managing interactive CLI binary processes"
 authors = [{name = "Anthropic", email = "support@anthropic.com"}]
 license = {text = "Apache-2.0"}
@@ -23,6 +23,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 executor-mcp = "executor_mcp:main"
+executor-attach = "executor_attach:main"
 
 [tool.setuptools]
-py-modules = ["executor_mcp"]
+py-modules = ["executor_mcp", "executor_attach"]
